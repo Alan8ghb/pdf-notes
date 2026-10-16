@@ -33,8 +33,10 @@ body.adding #bNote,body.drawing #bDraw,body.erasing #bDraw{background:#e6a100}
 .page canvas{display:block}.page .lbl{position:absolute;left:-2px;top:-15px;font-size:11px;color:#888}
 .adding .page{cursor:crosshair}
 .mk{position:absolute;width:24px;height:24px;margin:-24px 0 0 0;background:#ffd23f;border:1px solid #b88a00;border-radius:3px 3px 3px 0;font-size:13px;line-height:22px;text-align:center;cursor:pointer;z-index:2;user-select:none}
-.mk:hover .tip{display:block}.mk.hl{outline:3px solid #e33}
-.tip{display:none;position:absolute;left:26px;top:0;background:#fffbe0;border:1px solid #b88a00;padding:6px;min-width:120px;max-width:260px;white-space:pre-wrap;font-size:13px;text-align:left;line-height:1.4;color:#333}
+.mk:hover .tip,.tip.exp{display:block}.tip.clamp:not(.exp){display:none}.mk:hover .tip.clamp:not(.exp){display:-webkit-box}
+.clamp{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;line-clamp:3;overflow:hidden}.clamp.exp{display:block;-webkit-line-clamp:unset}
+.item .txt{white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;line-height:1.4}.item .more{display:none;font-size:12px;color:#1e66f5;margin-top:2px}.item.long .more{display:inline-block}.mk.hl{outline:3px solid #e33}
+.tip{display:none;position:absolute;left:26px;top:0;background:#fffbe0;border:1px solid #b88a00;padding:6px;width:min(240px,70vw);white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;cursor:pointer;font-size:13px;text-align:left;line-height:1.4;color:#333}
 #drop{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;color:#777;font-size:18px;pointer-events:none;text-align:center;padding:20px}
 body.drag{outline:4px dashed #e6a100;outline-offset:-8px}
 svg.ink{position:absolute;left:0;top:0;pointer-events:none;z-index:1}
@@ -44,9 +46,9 @@ body.erasing svg.ink polyline:hover{filter:drop-shadow(0 0 2px #e33)}
  padding:calc(8px + env(safe-area-inset-top)) calc(10px + env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom)) 10px}
 #side.open{transform:none}#side .hd{display:flex;align-items:center;justify-content:space-between}
 #shade{position:fixed;inset:0;z-index:29;background:rgba(0,0,0,.3);display:none}#shade.show{display:block}
-.pg{font-weight:bold;margin:10px 0 4px;color:#2d3e50}.item{padding:6px;border:1px solid #eee;border-radius:4px;margin-bottom:4px;cursor:pointer;font-size:13px;white-space:pre-wrap;word-break:break-all}.item:hover{background:#fffbe0}
+.pg{font-weight:bold;margin:10px 0 4px;color:#2d3e50}.item{padding:6px;border:1px solid #eee;border-radius:4px;margin-bottom:4px;cursor:pointer;font-size:13px;min-width:0;overflow:hidden}.item:hover{background:#fffbe0}
 #pop{position:fixed;display:none;z-index:40;background:#fff;border:1px solid #888;box-shadow:0 4px 16px rgba(0,0,0,.3);padding:8px;border-radius:8px;width:min(300px,calc(100vw - 20px))}
-#pop textarea{width:100%;height:100px;font:inherit}#pop .r{display:flex;gap:6px;justify-content:flex-end;margin-top:6px}
+#pop textarea{width:100%;font:inherit;line-height:1.4;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;resize:vertical;max-height:50vh;overflow-y:auto;padding:4px 6px}#pop .r{display:flex;gap:6px;justify-content:flex-end;margin-top:6px}
 #pop .opt{display:flex;gap:8px;align-items:center;font-size:12px;margin-top:6px;flex-wrap:wrap}
 #pop button{padding:6px 12px}
 </style></head><body>
@@ -80,7 +82,7 @@ body.erasing svg.ink polyline:hover{filter:drop-shadow(0 0 2px #e33)}
 <div id="drop">拖放 PDF 到此处，或点 📁 打开 PDF</div><div id="pages"></div>
 <div id="shade"></div>
 <div id="side"><div class="hd"><h3 style="margin:4px 0">笔记列表</h3><button class="ib" id="sideX" style="color:#333">✕</button></div><div id="list">暂无笔记</div></div>
-<div id="pop"><div id="poph" style="font-size:13px;color:#666;margin-bottom:4px"></div><textarea id="ptxt" placeholder="输入笔记内容…"></textarea>
+<div id="pop"><div id="poph" style="font-size:13px;color:#666;margin-bottom:4px"></div><textarea id="ptxt" rows="3" placeholder="输入笔记内容…"></textarea>
 <div class="opt">字号<input id="pfs" type="number" min="8" max="40" style="width:50px"> 文字颜色<input id="pcol" type="color"> <label><input type="checkbox" id="pdef">设为默认</label></div>
 <div class="r"><button id="pdel">删除</button><button id="pcancel">取消</button><button id="psave">保存</button></div></div>
 <script>
@@ -249,7 +251,7 @@ function drawMarkers(i){
     const [vx,vy]=pv.vp.convertToViewportPoint(n.x,n.y);
     const m=document.createElement('div'); m.className='mk'; m.id='mk-'+n.id; m.textContent='📝';
     m.style.left=vx+'px'; m.style.top=(vy+22)+'px';
-    const t=document.createElement('div'); t.className='tip'; t.textContent=n.text||'（空）'; t.style.fontSize=(n.fontSize||13)+'px'; t.style.color=n.color||'#333'; m.appendChild(t); m.style.borderColor=n.color||'#b88a00';
+    const t=document.createElement('div'); t.className='tip clamp'; t.textContent=n.text||'（空）'; t.onclick=e=>{e.stopPropagation();t.classList.toggle('exp')}; t.style.fontSize=(n.fontSize||13)+'px'; t.style.color=n.color||'#333'; m.appendChild(t); m.style.borderColor=n.color||'#b88a00';
     m.addEventListener('click',e=>{e.stopPropagation();openPop(n,e.clientX,e.clientY)});
     pv.div.appendChild(m);
   });
@@ -265,9 +267,10 @@ function onPageClick(e,i){
 function openPop(n,cx,cy,isNew){
   editing=n; const p=$('pop'); p.style.display='block';
   p.style.left=Math.min(cx+10,innerWidth-300)+'px'; p.style.top=Math.min(cy+10,innerHeight-190)+'px';
-  $('poph').textContent=(isNew?'新笔记':'编辑笔记')+' · 第 '+n.page+' 页'; $('ptxt').value=n.text; $('pfs').value=n.fontSize||defaults.fontSize; $('pcol').value=n.color||defaults.color; $('pdef').checked=false; const ap=()=>{$('ptxt').style.fontSize=$('pfs').value+'px';$('ptxt').style.color=$('pcol').value};ap();$('pfs').oninput=$('pcol').oninput=ap; $('pdel').style.display=isNew?'none':'';
-  $('ptxt').focus();
+  $('poph').textContent=(isNew?'新笔记':'编辑笔记')+' · 第 '+n.page+' 页'; $('ptxt').value=n.text; $('pfs').value=n.fontSize||defaults.fontSize; $('pcol').value=n.color||defaults.color; $('pdef').checked=false; const ap=()=>{$('ptxt').style.fontSize=$('pfs').value+'px';$('ptxt').style.color=$('pcol').value;autoGrow()};ap();$('pfs').oninput=$('pcol').oninput=ap; $('pdel').style.display=isNew?'none':'';
+  autoGrow(); $('ptxt').focus();
 }
+function autoGrow(){const t=$('ptxt');t.style.height='auto';const lh=parseFloat(getComputedStyle(t).lineHeight)||20;t.style.height=Math.max(t.scrollHeight+2,lh*3+10)+'px'}
 function closePop(){$('pop').style.display='none';editing=null;pendingNew=null}
 $('psave').onclick=()=>{ if(!editing)return; editing.text=$('ptxt').value; editing.fontSize=Math.max(8,Math.min(40,+$('pfs').value||13)); editing.color=$('pcol').value;
   if($('pdef').checked)setDefaults(editing.fontSize,editing.color);
@@ -281,7 +284,7 @@ function renderList(){
   Object.keys(by).map(Number).sort((a,b)=>a-b).forEach(p=>{
     const h=document.createElement('div'); h.className='pg'; h.textContent='第 '+p+' 页'; L.appendChild(h);
     by[p].sort((a,b)=>b.y-a.y||a.x-b.x).forEach(n=>{
-      const d=document.createElement('div'); d.className='item'; d.textContent=n.text||'（空）'; d.style.fontSize=(n.fontSize||13)+'px'; d.style.color=n.color||'#333'; d.style.borderLeft='4px solid '+(n.color||'#ffd23f'); d.onclick=()=>jump(n); L.appendChild(d);
+      const d=document.createElement('div'); d.className='item'; const tx=document.createElement('div'); tx.className='txt clamp'; tx.textContent=n.text||'（空）'; const mo=document.createElement('span'); mo.className='more'; mo.textContent='展开全文 ▾'; mo.onclick=e=>{e.stopPropagation();const ex=tx.classList.toggle('exp');mo.textContent=ex?'收起 ▴':'展开全文 ▾'}; d.append(tx,mo); d.style.fontSize=(n.fontSize||13)+'px'; d.style.color=n.color||'#333'; d.style.borderLeft='4px solid '+(n.color||'#ffd23f'); d.onclick=()=>jump(n); L.appendChild(d); requestAnimationFrame(()=>{if(tx.scrollHeight>tx.clientHeight+1)d.classList.add('long')});
     });
   });
 }
@@ -377,4 +380,5 @@ if(!canFs)$('bFull').style.display='none';
 $('bFull').onclick=()=>{const cur=document.fullscreenElement||document.webkitFullscreenElement;
   if(cur)(document.exitFullscreen||document.webkitExitFullscreen).call(document);else{const p=canFs.call(fsEl);p&&p.catch&&p.catch(()=>{})}};
 if('serviceWorker' in navigator&&location.protocol==='https:')navigator.serviceWorker.register('sw.js').catch(()=>{});
+$('ptxt').addEventListener('input',autoGrow);
 </script></body></html>
