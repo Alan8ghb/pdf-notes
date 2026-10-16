@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <html lang="zh-Hans"><head><meta charset="utf-8"><title>PDF笔记</title>
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,minimum-scale=1,user-scalable=no,viewport-fit=cover">
 <meta name="theme-color" content="#2d3e50">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -12,7 +12,7 @@
 <script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
 <style>
 *{box-sizing:border-box}html{background:#e9ebee}
-body{margin:0;font-family:system-ui,"PingFang SC","Microsoft YaHei",sans-serif;min-height:100dvh;background:#e9ebee;-webkit-tap-highlight-color:transparent}
+html,body{touch-action:pan-x pan-y;overscroll-behavior:none}body{margin:0;font-family:system-ui,"PingFang SC","Microsoft YaHei",sans-serif;min-height:100dvh;background:#e9ebee;-webkit-tap-highlight-color:transparent}
 #tb{position:fixed;z-index:20;top:0;left:0;right:0;height:calc(40px + env(safe-area-inset-top));padding:env(safe-area-inset-top) calc(6px + env(safe-area-inset-right)) 0 calc(6px + env(safe-area-inset-left));
  display:flex;align-items:center;gap:2px;background:rgba(45,62,80,.94);color:#fff;transition:transform .25s;backdrop-filter:blur(6px)}
 body.tbhide #tb{transform:translateY(-100%)}
@@ -28,7 +28,7 @@ body.adding #bNote,body.drawing #bDraw,body.erasing #bDraw{background:#e6a100}
 .menu .row{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
 .sw{width:26px;height:26px;border-radius:50%;border:2px solid #ddd;cursor:pointer;display:inline-block}.sw.sel{outline:3px solid #e6a100;outline-offset:1px}
 #mZoom .row button{min-width:44px;text-align:center}
-#pages{padding:calc(48px + env(safe-area-inset-top)) calc(8px + env(safe-area-inset-right)) calc(16px + env(safe-area-inset-bottom)) calc(8px + env(safe-area-inset-left))}
+#pages{touch-action:pan-x pan-y;transform-origin:0 0;padding:calc(48px + env(safe-area-inset-top)) calc(8px + env(safe-area-inset-right)) calc(16px + env(safe-area-inset-bottom)) calc(8px + env(safe-area-inset-left))}
 .page{position:relative;margin:0 auto 16px;box-shadow:0 2px 8px rgba(0,0,0,.25);background:#fff}
 .page canvas{display:block}.page .lbl{position:absolute;left:-2px;top:-15px;font-size:11px;color:#888}
 .adding .page{cursor:crosshair}
@@ -87,6 +87,7 @@ body.erasing svg.ink polyline:hover{filter:drop-shadow(0 0 2px #e33)}
 pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 const $=id=>document.getElementById(id);
 let strokes=[],drawMode=false,eraseMode=false,undoStack=[],penColor='#e53935',defaults=JSON.parse(localStorage.getItem('pdfnotes:defaults')||'{"fontSize":13,"color":"#333333"}');
+let curFile=null,pageProxies=[],baseVps=[],io=null,rendered=new Map(),saveWarned=false;
 let pdf=null,bytes=null,fileName='',key='',scale=1,notes=[],pageViews=[],adding=false,editing=null,pendingNew=null;
 // notes: {id,page(1-based),x,y (PDF user-space, top-left of icon point),text,created}
 
@@ -142,12 +143,15 @@ async function buildAnnotatedPdf(srcBytes, notes, PDFLib, strokes){
 
 function setStatus(s){$('status').textContent=s}
 function uid(){return 'n'+Date.now().toString(36)+Math.random().toString(36).slice(2,7)}
-function save(){ if(key){ try{localStorage.setItem(key,JSON.stringify({notes,strokes}))}catch(e){setStatus('保存失败：'+e.message)} } }
+function save(){ if(!key)return; try{localStorage.setItem(key,JSON.stringify({notes,strokes}))}catch(e){setStatus('⚠ 保存失败：存储空间不足');if(!saveWarned){saveWarned=true;alert('浏览器存储空间不足，笔记未能自动保存。请用 📁 导出笔记 JSON 备份，或删除部分画线。')}} }
 
 async function openFile(f){
   if(!f)return; if(!/pdf$/i.test(f.type)&&!/\.pdf$/i.test(f.name)){alert('请选择 PDF 文件');return}
-  bytes=new Uint8Array(await f.arrayBuffer()); fileName=f.name; key='pdfnotes:'+f.name+':'+f.size;
-  try{pdf=await pdfjsLib.getDocument({data:bytes.slice()}).promise}catch(e){alert('无法打开 PDF：'+e.message);return}
+  if(pdf){releaseAll();try{await pdf.destroy()}catch(e){} pdf=null}
+  curFile=f; fileName=f.name; key='pdfnotes:'+f.name+':'+f.size; setStatus('正在打开…');
+  try{pdf=await pdfjsLib.getDocument({data:new Uint8Array(await f.arrayBuffer())}).promise}catch(e){alert('无法打开 PDF：'+e.message);return}
+  pageProxies=[];baseVps=[];
+  for(let i=1;i<=pdf.numPages;i++){const pg=await pdf.getPage(i);pageProxies[i]=pg;baseVps[i]=pg.getViewport({scale:1});if(i%50===0)setStatus('读取页面 '+i+'/'+pdf.numPages)}
   const stored=localStorage.getItem(key);
   undoStack=[];if(stored){const j=JSON.parse(stored);notes=Array.isArray(j)?j:(j.notes||[]);strokes=Array.isArray(j)?[]:(j.strokes||[])}else{const r=await loadExistingAnnots();notes=r.notes;strokes=r.strokes;save()}
   ['add','draw','exp','ejson'].forEach(i=>$(i).disabled=false);
@@ -171,27 +175,41 @@ async function loadExistingAnnots(){
   return {notes:out,strokes:ink};
 }
 async function fitWidth(){
-  const pg=await pdf.getPage(1); const vp=pg.getViewport({scale:1});
-  scale=Math.max(0.3,Math.min(4,(document.documentElement.clientWidth-16)/vp.width)); await render();
+  scale=Math.max(0.3,Math.min(4,(document.documentElement.clientWidth-16)/baseVps[1].width)); await render();
+}
+const MAXPX=4.5e6;
+function releasePage(i){const r=rendered.get(i);if(!r)return;if(r.task)try{r.task.cancel()}catch(e){}
+  if(r.canvas){r.canvas.width=0;r.canvas.height=0;r.canvas.remove()}rendered.delete(i)}
+function releaseAll(){[...rendered.keys()].forEach(releasePage);if(io)io.disconnect()}
+function renderPage(i){
+  const pv=pageViews[i]; if(!pv||rendered.has(i))return;
+  const vp=pv.vp,w=vp.width,h=vp.height;let os=Math.min(window.devicePixelRatio||1,2);
+  if(w*h*os*os>MAXPX)os=Math.sqrt(MAXPX/(w*h));
+  const c=document.createElement('canvas');c.width=Math.floor(w*os);c.height=Math.floor(h*os);c.style.width=w+'px';c.style.height=h+'px';c.style.position='absolute';c.style.left=c.style.top='0';
+  pv.div.insertBefore(c,pv.div.firstChild);
+  const r={canvas:c,task:null};rendered.set(i,r);
+  r.task=pageProxies[i].render({canvasContext:c.getContext('2d',{alpha:false}),viewport:vp,transform:os!==1?[os,0,0,os,0,0]:null});
+  r.task.promise.then(()=>{r.task=null},()=>{});
+  // keep only nearby pages
+  if(rendered.size>7){const cur=visiblePage();[...rendered.keys()].filter(k=>Math.abs(k-cur)>2).forEach(releasePage)}
 }
 let renderToken=0;
 async function render(){
   const tok=++renderToken; $('zl').textContent=Math.round(scale*100)+'%';
-  const box=$('pages'); box.innerHTML=''; pageViews=[];
-  const dpr=window.devicePixelRatio||1;
+  releaseAll(); const box=$('pages'); box.style.transform=''; box.innerHTML=''; pageViews=[];
+  io=new IntersectionObserver(es=>es.forEach(e=>{const i=+e.target.dataset.page;if(e.isIntersecting)renderPage(i);else releasePage(i)}),{rootMargin:'100% 0px'});
+  const frag=document.createDocumentFragment();
   for(let i=1;i<=pdf.numPages;i++){
-    const pg=await pdf.getPage(i); if(tok!==renderToken)return;
-    const vp=pg.getViewport({scale});
+    const vp=pageProxies[i].getViewport({scale});
     const div=document.createElement('div'); div.className='page'; div.style.width=vp.width+'px'; div.style.height=vp.height+'px'; div.dataset.page=i;
-    const c=document.createElement('canvas'); c.width=vp.width*dpr; c.height=vp.height*dpr; c.style.width=vp.width+'px'; c.style.height=vp.height+'px';
-    div.appendChild(c); const l=document.createElement('div'); l.className='lbl'; l.textContent='第 '+i+' 页'; div.appendChild(l);
-    box.appendChild(div); pageViews[i]={div,vp};
+    const l=document.createElement('div'); l.className='lbl'; l.textContent='第 '+i+' 页'; div.appendChild(l);
+    frag.appendChild(div); pageViews[i]={div,vp};
     div.addEventListener('click',e=>onPageClick(e,i));
     const svg=document.createElementNS(NS,'svg');svg.setAttribute('class','ink');svg.setAttribute('width',vp.width);svg.setAttribute('height',vp.height);div.appendChild(svg);pageViews[i].svg=svg;
     div.addEventListener('pointerdown',e=>startStroke(e,i));
-    pg.render({canvasContext:c.getContext('2d'),viewport:vp,transform:dpr!==1?[dpr,0,0,dpr,0,0]:null});
-    drawMarkers(i);drawStrokes(i);
   }
+  box.appendChild(frag);
+  for(let i=1;i<=pdf.numPages;i++){drawMarkers(i);drawStrokes(i);io.observe(pageViews[i].div)}
   renderList();
 }
 const NS='http://www.w3.org/2000/svg';
@@ -202,14 +220,16 @@ function strokeEl(k,vp){const el=document.createElementNS(NS,'polyline');
   el.addEventListener('click',e=>{if(!eraseMode)return;e.stopPropagation();strokes=strokes.filter(s=>s!==k);undoStack.push({t:'del',k});save();drawStrokes(k.page);setStatus('已删除一条画线')});
   return el}
 function drawStrokes(i){const pv=pageViews[i];if(!pv||!pv.svg)return;pv.svg.innerHTML='';strokes.filter(k=>k.page===i).forEach(k=>pv.svg.appendChild(strokeEl(k,pv.vp)))}
+let cancelStroke=()=>{};
 function startStroke(e,i){
-  if(!drawMode||e.button>0)return; e.preventDefault();
+  if(!drawMode||e.button>0||!e.isPrimary||pinch)return; e.preventDefault();
   const pv=pageViews[i],r=pv.div.getBoundingClientRect(),hl=$('hl').checked;
   const k={id:uid(),page:i,color:penColor,width:+$('lw').value*(hl?4:1),opacity:hl?0.35:1,points:[],created:Date.now()};
-  const add=ev=>{const p=pv.vp.convertToPdfPoint(ev.clientX-r.left,ev.clientY-r.top);const l=k.points[k.points.length-1];if(!l||Math.hypot(p[0]-l[0],p[1]-l[1])>0.8/scale)k.points.push(p)};
+  const add=ev=>{let p=pv.vp.convertToPdfPoint(ev.clientX-r.left,ev.clientY-r.top);p=[Math.round(p[0]*100)/100,Math.round(p[1]*100)/100];const l=k.points[k.points.length-1];if(!l||Math.hypot(p[0]-l[0],p[1]-l[1])>0.8/scale)k.points.push(p)};
   add(e);const el=strokeEl(k,pv.vp);pv.svg.appendChild(el);
   const move=ev=>{(ev.getCoalescedEvents?ev.getCoalescedEvents():[ev]).forEach(add);el.setAttribute('points',k.points.map(q=>pv.vp.convertToViewportPoint(q[0],q[1]).join(',')).join(' '))};
-  const up=()=>{removeEventListener('pointermove',move);removeEventListener('pointerup',up);
+  cancelStroke=()=>{removeEventListener('pointermove',move);removeEventListener('pointerup',up);el.remove();cancelStroke=()=>{}};
+  const up=()=>{cancelStroke=()=>{};removeEventListener('pointermove',move);removeEventListener('pointerup',up);if(pinch){el.remove();return}
     if(k.points.length===1)k.points.push([k.points[0][0]+0.5,k.points[0][1]]);
     strokes.push(k);undoStack.push({t:'add',k});save();drawStrokes(i)};
   addEventListener('pointermove',move);addEventListener('pointerup',up);
@@ -283,14 +303,37 @@ $('dfs').value=defaults.fontSize;$('dcol').value=defaults.color;
 $('dfs').onchange=()=>setDefaults(Math.max(8,Math.min(40,+$('dfs').value||13)),$('dcol').value);$('dcol').onchange=()=>setDefaults(defaults.fontSize,$('dcol').value);
 document.addEventListener('keydown',e=>{if(e.key==='Escape'){if(adding)setAdding(false);if(drawMode||eraseMode){eraseMode=false;setDraw(false)}}
   if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='z'&&document.activeElement.tagName!=='TEXTAREA'&&pdf){e.preventDefault();undo()}});
-async function zoom(f){ if(!pdf)return; const H=()=>document.documentElement.scrollHeight; const rel=scrollY/(H()||1); scale=Math.max(0.3,Math.min(4,scale*f)); await render(); window.scrollTo(scrollX,rel*H()); }
+function clampS(s){return Math.max(0.3,Math.min(4,s))}
+// set new scale keeping the content point under screen point (cx,cy) fixed
+async function setScale(ns,cx,cy){ if(!pdf)return; ns=clampS(ns); const r=ns/scale; if(Math.abs(r-1)<0.001){$('pages').style.transform='';return}
+  const box=$('pages'),b=box.getBoundingClientRect(); box.style.transform='';
+  const ax=scrollX+cx-(b.left+scrollX), ay=scrollY+cy-(b.top+scrollY); // point within #pages (untransformed)
+  scale=ns; await render();
+  quietScroll=Date.now()+600;
+  const nb=box.getBoundingClientRect(); window.scrollTo(Math.max(0,ax*r+nb.left+scrollX-cx),Math.max(0,ay*r+nb.top+scrollY-cy)); }
+let zoomTimer=null,pendZoom=1;
+function zoom(f){ if(!pdf)return; pendZoom=clampS(scale*pendZoom*f)/scale; const box=$('pages'),b=box.getBoundingClientRect(),cx=innerWidth/2,cy=innerHeight/2;
+  box.style.transformOrigin=(cx-b.left)+'px '+(cy-b.top)+'px'; box.style.transform='scale('+pendZoom+')'; $('zl').textContent=Math.round(scale*pendZoom*100)+'%';
+  clearTimeout(zoomTimer); zoomTimer=setTimeout(()=>{const z=pendZoom;pendZoom=1;$('pages').style.transformOrigin='0 0';setScale(scale*z,cx,cy)},300); }
+// two-finger pinch on content only
+let pinch=null;
+const tdist=t=>Math.hypot(t[0].clientX-t[1].clientX,t[0].clientY-t[1].clientY);
+document.addEventListener('touchstart',e=>{ if(!pdf||e.touches.length!==2||e.target.closest('#tb,.menu,#side,#pop'))return;
+  cancelStroke&&cancelStroke(); const t=e.touches,box=$('pages'),b=box.getBoundingClientRect();
+  const cx=(t[0].clientX+t[1].clientX)/2,cy=(t[0].clientY+t[1].clientY)/2;
+  pinch={d0:tdist(t),cx,cy,s:1}; box.style.transformOrigin=(cx-b.left)+'px '+(cy-b.top)+'px'; e.preventDefault(); },{passive:false});
+document.addEventListener('touchmove',e=>{ if(!pinch)return; e.preventDefault(); if(e.touches.length<2)return;
+  pinch.s=clampS(scale*tdist(e.touches)/pinch.d0)/scale; $('pages').style.transform='scale('+pinch.s+')'; $('zl').textContent=Math.round(scale*pinch.s*100)+'%'; },{passive:false});
+document.addEventListener('touchend',e=>{ if(!pinch||e.touches.length>=2)return; const p=pinch;pinch=null; $('pages').style.transformOrigin='0 0'; setScale(scale*p.s,p.cx,p.cy); });
+document.addEventListener('gesturestart',e=>e.preventDefault());
+document.addEventListener('dblclick',e=>e.preventDefault());
 $('zin').onclick=()=>zoom(1.2); $('zout').onclick=()=>zoom(1/1.2); $('zfit').onclick=()=>pdf&&fitWidth();
 $('file').onchange=e=>{openFile(e.target.files[0]);e.target.value=''};
 ['dragenter','dragover'].forEach(t=>document.addEventListener(t,e=>{e.preventDefault();document.body.classList.add('drag')}));
 ['dragleave','drop'].forEach(t=>document.addEventListener(t,e=>{e.preventDefault();if(t==='drop'||e.target===document.documentElement||!e.relatedTarget)document.body.classList.remove('drag')}));
 document.addEventListener('drop',e=>{const f=e.dataTransfer.files[0];if(f)openFile(f)});
 function download(data,name,type){const u=URL.createObjectURL(new Blob([data],{type}));const a=document.createElement('a');a.href=u;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(u),5000)}
-$('exp').onclick=async()=>{ try{ setStatus('正在导出…'); const out=await buildAnnotatedPdf(bytes,notes,PDFLib,strokes);
+$('exp').onclick=async()=>{ try{ setStatus('正在导出…'); const out=await buildAnnotatedPdf(new Uint8Array(await curFile.arrayBuffer()),notes,PDFLib,strokes);
   download(out,fileName.replace(/\.pdf$/i,'')+'_带笔记.pdf','application/pdf'); setStatus('已导出 '+notes.length+' 条笔记、'+strokes.length+' 条画线'); }catch(e){alert('导出失败：'+e.message)} };
 $('ejson').onclick=()=>download(JSON.stringify({app:'pdf-notes-reader',file:fileName,key,exported:new Date().toISOString(),notes,strokes},null,2),fileName.replace(/\.pdf$/i,'')+'_笔记.json','application/json');
 $('ijson').onchange=async e=>{ const f=e.target.files[0]; e.target.value=''; if(!f)return;
@@ -322,8 +365,8 @@ $('shade').onclick=closeSide;$('sideX').onclick=closeSide;
 const updDot=()=>{$('penDot').style.color=penColor};updDot();
 $('pal').addEventListener('click',()=>setTimeout(updDot,0));$('ccol').addEventListener('input',updDot);
 // auto-hide toolbar
-let lastY=scrollY;
-addEventListener('scroll',()=>{const y=scrollY,d=y-lastY;
+let lastY=scrollY,quietScroll=0;
+addEventListener('scroll',()=>{const y=scrollY,d=y-lastY;if(Date.now()<quietScroll||pinch){lastY=y;return}
   if(y<40||d<-6)document.body.classList.remove('tbhide');
   else if(d>6&&!document.querySelector('.menu.show')&&$('pop').style.display!=='block')document.body.classList.add('tbhide');
   if(Math.abs(d)>6)lastY=y},{passive:true});
