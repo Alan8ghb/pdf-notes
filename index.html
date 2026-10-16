@@ -11,7 +11,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
 <style>
-*{box-sizing:border-box}html{background:#e9ebee}
+*{box-sizing:border-box}html,html:fullscreen,body:fullscreen{background:#e9ebee}::backdrop{background:#e9ebee}
 html,body{touch-action:pan-x pan-y;overscroll-behavior:none}body{margin:0;font-family:system-ui,"PingFang SC","Microsoft YaHei",sans-serif;min-height:100dvh;background:#e9ebee;-webkit-tap-highlight-color:transparent}
 #tb{position:fixed;z-index:20;top:0;left:0;right:0;height:calc(40px + env(safe-area-inset-top));padding:env(safe-area-inset-top) calc(6px + env(safe-area-inset-right)) 0 calc(6px + env(safe-area-inset-left));
  display:flex;align-items:center;gap:2px;background:rgba(45,62,80,.94);color:#fff;transition:transform .25s;backdrop-filter:blur(6px)}
@@ -95,7 +95,7 @@ body.erasing svg.ink polyline:hover{filter:drop-shadow(0 0 2px #e33)}
 pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 const $=id=>document.getElementById(id);
 let strokes=[],drawMode=false,eraseMode=false,undoStack=[],penColor='#e53935',defaults=JSON.parse(localStorage.getItem('pdfnotes:defaults')||'{"fontSize":13,"color":"#333333"}');
-let curFile=null,pageProxies=[],baseVps=[],io=null,rendered=new Map(),saveWarned=false;
+let rangeBytes=0,curFile=null,pageProxies=[],baseVps=[],io=null,rendered=new Map(),saveWarned=false;
 let pdf=null,bytes=null,fileName='',key='',scale=1,notes=[],pageViews=[],adding=false,editing=null,pendingNew=null;
 // notes: {id,page(1-based),x,y (PDF user-space, top-left of icon point),text,created}
 
@@ -170,6 +170,11 @@ async function noteToPng(n,w,h){
   lines.forEach((t,i)=>g.fillText(t,pad,pad+i*lh+(lh-fs)/2));
   const b=await new Promise(r=>c.toBlob(r,'image/png'));c.width=c.height=0;return new Uint8Array(await b.arrayBuffer());
 }
+function showError(msg){let o=document.getElementById('errbox');if(!o){o=document.createElement('div');o.id='errbox';
+  o.style.cssText='position:fixed;z-index:99;left:10px;right:10px;bottom:calc(10px + env(safe-area-inset-bottom));background:#fff3f3;color:#900;border:1px solid #e99;border-radius:8px;padding:10px 12px;font-size:14px;box-shadow:0 4px 16px rgba(0,0,0,.3);white-space:pre-wrap;max-height:40vh;overflow:auto';
+  o.onclick=()=>o.remove();document.body.appendChild(o)}o.textContent='⚠ '+msg+'\n（点此关闭；如反复出现，可尝试缩小页面或重新打开文件）';setStatus('⚠ 出错了')}
+addEventListener('error',e=>showError('程序错误：'+(e.message||e.error)));
+addEventListener('unhandledrejection',e=>{const m=e.reason&&(e.reason.message||e.reason);if(e.reason&&e.reason.name==='RenderingCancelledException')return;showError('程序错误：'+m)});
 function setStatus(s){$('status').textContent=s}
 function uid(){return 'n'+Date.now().toString(36)+Math.random().toString(36).slice(2,7)}
 function save(){ if(!key)return; try{localStorage.setItem(key,JSON.stringify({notes,strokes},(k,v)=>k==='_orig'?undefined:v))}catch(e){setStatus('⚠ 保存失败：存储空间不足');if(!saveWarned){saveWarned=true;alert('浏览器存储空间不足，笔记未能自动保存。请用 📁 导出笔记 JSON 备份，或删除部分画线。')}} }
@@ -178,9 +183,13 @@ async function openFile(f){
   if(!f)return; if(!/pdf$/i.test(f.type)&&!/\.pdf$/i.test(f.name)){alert('请选择 PDF 文件');return}
   if(pdf){releaseAll();try{await pdf.destroy()}catch(e){} pdf=null}
   curFile=f; fileName=f.name; key='pdfnotes:'+f.name+':'+f.size; setStatus('正在打开…');
-  try{pdf=await pdfjsLib.getDocument({data:new Uint8Array(await f.arrayBuffer())}).promise}catch(e){alert('无法打开 PDF：'+e.message);return}
-  pageProxies=[];baseVps=[];
-  for(let i=1;i<=pdf.numPages;i++){const pg=await pdf.getPage(i);pageProxies[i]=pg;baseVps[i]=pg.getViewport({scale:1});if(i%50===0)setStatus('读取页面 '+i+'/'+pdf.numPages)}
+  // range loading straight from the File: only the bytes pdf.js needs are read; no full copy in the page
+  const tr=new pdfjsLib.PDFDataRangeTransport(f.size,null);
+  tr.requestDataRange=(b,e)=>{rangeBytes+=e-b;f.slice(b,e).arrayBuffer().then(buf=>tr.onDataRange(b,new Uint8Array(buf)),err=>showError('读取文件失败：'+err.message))};
+  try{pdf=await pdfjsLib.getDocument({range:tr,length:f.size,disableAutoFetch:true,disableStream:true,rangeChunkSize:65536,
+      isOffscreenCanvasSupported:false,maxImageSize:MOBILE?1.6e7:4e7,canvasMaxAreaInBytes:MOBILE?6e7:2e8,stopAtErrors:false}).promise}
+  catch(e){showError('无法打开 PDF：'+e.message);return}
+  pageProxies=[];baseVps=[];const p1=await pdf.getPage(1);pageProxies[1]=p1;baseVps[1]=p1.getViewport({scale:1});
   const stored=localStorage.getItem(key);
   undoStack=[];if(stored){const j=JSON.parse(stored);notes=Array.isArray(j)?j:(j.notes||[]);strokes=Array.isArray(j)?[]:(j.strokes||[])}else{const r=await loadExistingAnnots();notes=r.notes;strokes=r.strokes;save()}
   ['add','draw','exp','ejson'].forEach(i=>$(i).disabled=false);
@@ -210,35 +219,46 @@ async function loadExistingAnnots(){
 async function fitWidth(){
   scale=Math.max(0.3,Math.min(4,(document.documentElement.clientWidth-16)/baseVps[1].width)); await render();
 }
-const MAXPX=4.5e6;
+const MOBILE=matchMedia('(pointer:coarse)').matches||Math.min(screen.width,screen.height)<800;
+const MAXPX=MOBILE?2.5e6:4.5e6,MAXDPR=MOBILE?1.5:2,KEEP=MOBILE?4:7;
+let cleanupTimer=null;
+function scheduleCleanup(){clearTimeout(cleanupTimer);cleanupTimer=setTimeout(()=>{if(pdf&&![...rendered.values()].some(r=>r.task))pdf.cleanup().catch(()=>{})},4000)}
 function releasePage(i){const r=rendered.get(i);if(!r)return;if(r.task)try{r.task.cancel()}catch(e){}
+  r.dead=true;const pp=pageProxies[i];if(pp)setTimeout(()=>{if(!rendered.has(i))try{pp.cleanup()}catch(e){}},0);scheduleCleanup();
   if(r.canvas){r.canvas.width=0;r.canvas.height=0;r.canvas.remove()}rendered.delete(i)}
 function releaseAll(){[...rendered.keys()].forEach(releasePage);if(io)io.disconnect()}
 function renderPage(i){
   const pv=pageViews[i]; if(!pv||rendered.has(i))return;
-  const vp=pv.vp,w=vp.width,h=vp.height;let os=Math.min(window.devicePixelRatio||1,2);
-  if(w*h*os*os>MAXPX)os=Math.sqrt(MAXPX/(w*h));
-  const c=document.createElement('canvas');c.width=Math.floor(w*os);c.height=Math.floor(h*os);c.style.width=w+'px';c.style.height=h+'px';c.style.position='absolute';c.style.left=c.style.top='0';
-  pv.div.insertBefore(c,pv.div.firstChild);
-  const r={canvas:c,task:null};rendered.set(i,r);
-  // hide the PDF's own Text/FreeText/Ink annotations on the canvas: they are shown as editable notes/strokes instead
-  pageProxies[i].getAnnotations().then(an=>{
+  const r={canvas:null,task:null,dead:false};rendered.set(i,r);
+  (async()=>{
+    let pg=pageProxies[i]; if(!pg){pg=await pdf.getPage(i);pageProxies[i]=pg}
+    if(r.dead||pageViews[i]!==pv)return;
+    const vp=pg.getViewport({scale});
+    if(Math.abs(vp.width-pv.vp.width)>0.5||Math.abs(vp.height-pv.vp.height)>0.5||vp.rotation!==pv.vp.rotation){
+      pv.vp=vp;pv.div.style.width=vp.width+'px';pv.div.style.height=vp.height+'px';pv.svg.setAttribute('width',vp.width);pv.svg.setAttribute('height',vp.height);drawMarkers(i);drawStrokes(i)}
+    pv.vp=vp;
+    const w=vp.width,h=vp.height;let os=Math.min(window.devicePixelRatio||1,MAXDPR);
+    if(w*h*os*os>MAXPX)os=Math.sqrt(MAXPX/(w*h));
+    const c=document.createElement('canvas');c.width=Math.floor(w*os);c.height=Math.floor(h*os);c.style.width=w+'px';c.style.height=h+'px';c.style.position='absolute';c.style.left=c.style.top='0';
+    const g=c.getContext('2d',{alpha:false});g.fillStyle='#fff';g.fillRect(0,0,c.width,c.height); // never show a black canvas
+    pv.div.insertBefore(c,pv.div.firstChild);r.canvas=c;
+    const an=await pg.getAnnotations().catch(()=>[]);
     an.forEach(x=>{if(x.subtype==='Text'||x.subtype==='FreeText'||x.subtype==='Ink'||x.subtype==='Popup')pdf.annotationStorage.setValue(x.id,{noView:true})});
-    if(rendered.get(i)!==r)return;
-    r.task=pageProxies[i].render({canvasContext:c.getContext('2d',{alpha:false}),viewport:vp,transform:os!==1?[os,0,0,os,0,0]:null,annotationMode:pdfjsLib.AnnotationMode.ENABLE_STORAGE});
-    r.task.promise.then(()=>{r.task=null},()=>{});
-  },()=>{});
-  // keep only nearby pages
-  if(rendered.size>7){const cur=visiblePage();[...rendered.keys()].filter(k=>Math.abs(k-cur)>2).forEach(releasePage)}
+    if(r.dead)return;
+    r.task=pg.render({canvasContext:g,viewport:vp,transform:os!==1?[os,0,0,os,0,0]:null,annotationMode:pdfjsLib.AnnotationMode.ENABLE_STORAGE});
+    await r.task.promise.then(()=>{r.task=null},e=>{r.task=null;if(e&&e.name!=='RenderingCancelledException'){pv.div.dataset.err='1';console.warn('page',i,e);
+      g.fillStyle='#fff';g.fillRect(0,0,c.width,c.height);g.fillStyle='#c00';g.font=(16*os)+'px sans-serif';g.fillText('第 '+i+' 页渲染失败：'+(e.message||e),10*os,30*os)}});
+  })().catch(e=>{if(!r.dead)showError('第 '+i+' 页加载失败：'+(e.message||e))});
+  if(rendered.size>KEEP){const cur=visiblePage();[...rendered.keys()].sort((a,b)=>Math.abs(b-cur)-Math.abs(a-cur)).slice(0,rendered.size-KEEP).forEach(k=>{if(Math.abs(k-cur)>1)releasePage(k)})}
 }
 let renderToken=0;
 async function render(){
   const tok=++renderToken; $('zl').textContent=Math.round(scale*100)+'%';
   releaseAll(); const box=$('pages'); box.style.transform=''; box.innerHTML=''; pageViews=[];
-  io=new IntersectionObserver(es=>es.forEach(e=>{const i=+e.target.dataset.page;if(e.isIntersecting)renderPage(i);else releasePage(i)}),{rootMargin:'100% 0px'});
+  io=new IntersectionObserver(es=>es.forEach(e=>{const i=+e.target.dataset.page;if(e.isIntersecting)renderPage(i);else releasePage(i)}),{rootMargin:MOBILE?'50% 0px':'100% 0px'});
   const frag=document.createDocumentFragment();
   for(let i=1;i<=pdf.numPages;i++){
-    const vp=pageProxies[i].getViewport({scale});
+    const vp=(pageProxies[i]||pageProxies[1]).getViewport({scale});
     const div=document.createElement('div'); div.className='page'; div.style.width=vp.width+'px'; div.style.height=vp.height+'px'; div.dataset.page=i;
     const l=document.createElement('div'); l.className='lbl'; l.textContent='第 '+i+' 页'; div.appendChild(l);
     frag.appendChild(div); pageViews[i]={div,vp};
