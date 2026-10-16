@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="zh-Hans"><head><meta charset="utf-8"><title>PDF 笔记阅读器</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+<style>
+*{box-sizing:border-box}body{margin:0;font-family:system-ui,"PingFang SC","Microsoft YaHei",sans-serif;display:flex;flex-direction:column;height:100vh;background:#e9ebee}
+#bar{display:flex;gap:8px;align-items:center;padding:8px;background:#2d3e50;color:#fff;flex-wrap:wrap}
+#bar button,#bar label.btn{background:#46607a;color:#fff;border:0;padding:6px 10px;border-radius:4px;cursor:pointer;font-size:14px}
+#bar button.on{background:#e6a100}#bar button:disabled{opacity:.5;cursor:default}
+#main{flex:1;display:flex;min-height:0}#view{flex:1;overflow:auto;position:relative;padding:16px}
+#side{width:300px;background:#fff;border-left:1px solid #ccc;overflow:auto;padding:8px}
+.page{position:relative;margin:0 auto 16px;box-shadow:0 2px 8px rgba(0,0,0,.25);background:#fff}
+.page canvas{display:block}.page .lbl{position:absolute;left:-2px;top:-18px;font-size:12px;color:#666}
+.adding .page{cursor:crosshair}
+.mk{position:absolute;width:22px;height:22px;margin:-22px 0 0 0;background:#ffd23f;border:1px solid #b88a00;border-radius:3px 3px 3px 0;font-size:13px;line-height:20px;text-align:center;cursor:pointer;z-index:2;user-select:none}
+.mk:hover .tip{display:block}.mk.hl{outline:3px solid #e33}
+.tip{display:none;position:absolute;left:24px;top:0;background:#fffbe0;border:1px solid #b88a00;padding:6px;min-width:120px;max-width:260px;white-space:pre-wrap;font-size:13px;text-align:left;line-height:1.4;color:#333}
+#drop{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#777;font-size:20px;pointer-events:none}
+body.drag #view{outline:4px dashed #e6a100;outline-offset:-8px}
+.pg{font-weight:bold;margin:10px 0 4px;color:#2d3e50}.item{padding:6px;border:1px solid #eee;border-radius:4px;margin-bottom:4px;cursor:pointer;font-size:13px;white-space:pre-wrap;word-break:break-all}.item:hover{background:#fffbe0}
+#pop{position:fixed;display:none;z-index:10;background:#fff;border:1px solid #888;box-shadow:0 4px 16px rgba(0,0,0,.3);padding:8px;border-radius:6px;width:280px}
+#pop textarea{width:100%;height:100px;font:inherit}#pop .r{display:flex;gap:6px;justify-content:flex-end;margin-top:6px}
+#bar2{display:none;gap:6px;align-items:center;padding:6px 8px;background:#3a4f63;color:#fff;flex-wrap:wrap;font-size:13px}
+body.drawing #bar2,body.erasing #bar2{display:flex}
+.sw{width:20px;height:20px;border-radius:50%;border:2px solid #fff;cursor:pointer}.sw.sel{outline:2px solid #e6a100;outline-offset:1px}
+#bar2 button{background:#46607a;color:#fff;border:0;padding:4px 8px;border-radius:4px;cursor:pointer}#bar2 button.on{background:#e6a100}
+svg.ink{position:absolute;left:0;top:0;pointer-events:none;z-index:1}
+body.drawing .page{cursor:crosshair;touch-action:none}body.erasing svg.ink polyline{pointer-events:stroke;cursor:pointer}
+body.erasing svg.ink polyline:hover{filter:drop-shadow(0 0 2px #e33)}
+#pop .opt{display:flex;gap:8px;align-items:center;font-size:12px;margin-top:6px}
+@media (max-width:760px){#main{flex-direction:column}#side{width:auto;max-height:32vh;border-left:0;border-top:1px solid #ccc}
+#view{padding:8px}#bar,#bar2{gap:5px;padding:5px}#bar button,#bar label.btn{padding:6px 8px;font-size:13px}#bar>span[style]{margin-left:0!important}#status{width:100%}
+#pop{width:calc(100vw - 20px)}.mk{width:26px;height:26px;margin-top:-26px;line-height:24px}}
+#status{font-size:13px;opacity:.85}
+</style></head><body>
+<div id="bar">
+<label class="btn">打开 PDF<input type="file" id="file" accept="application/pdf,.pdf" hidden></label>
+<button id="zout">－</button><span id="zl">100%</span><button id="zin">＋</button><button id="zfit">适合宽度</button>
+<button id="add" disabled>添加笔记</button>
+<button id="draw" disabled>手绘画线</button>
+<button id="exp" disabled>导出带笔记的PDF</button>
+<button id="ejson" disabled>导出笔记 JSON</button>
+<label class="btn">导入笔记 JSON<input type="file" id="ijson" accept=".json,application/json" hidden></label>
+<span id="status">请选择或拖入 PDF 文件</span>
+<span style="margin-left:auto;font-size:12px">默认笔记：字号<input id="dfs" type="number" min="8" max="40" value="13" style="width:46px"> 颜色<input id="dcol" type="color" value="#333333"></span>
+</div>
+<div id="bar2">颜色：<span id="pal"></span><input type="color" id="ccol" title="自定义颜色" value="#ff0000">
+粗细：<input type="range" id="lw" min="0.5" max="20" step="0.5" value="2"><span id="lwv">2</span>pt
+<label><input type="checkbox" id="hl"> 荧光笔（半透明）</label>
+<button id="eraser">橡皮擦（点击删除单条）</button><button id="undo">撤销</button><button id="clrpg">清除本页画线</button>
+<span>（Ctrl+Z 撤销，Esc 退出）</span></div>
+<div id="main"><div id="view"><div id="drop">拖放 PDF 到此处，或点击“打开 PDF”</div><div id="pages"></div></div>
+<div id="side"><h3 style="margin:4px 0">笔记列表</h3><div id="list">暂无笔记</div></div></div>
+<div id="pop"><div id="poph" style="font-size:13px;color:#666;margin-bottom:4px"></div><textarea id="ptxt" placeholder="输入笔记内容…"></textarea>
+<div class="opt">字号<input id="pfs" type="number" min="8" max="40" style="width:50px"> 文字颜色<input id="pcol" type="color"> <label><input type="checkbox" id="pdef">设为默认</label></div>
+<div class="r"><button id="pdel">删除</button><button id="pcancel">取消</button><button id="psave">保存</button></div></div>
+<script>
+pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+const $=id=>document.getElementById(id);
+let strokes=[],drawMode=false,eraseMode=false,undoStack=[],penColor='#e53935',defaults=JSON.parse(localStorage.getItem('pdfnotes:defaults')||'{"fontSize":13,"color":"#333333"}');
+let pdf=null,bytes=null,fileName='',key='',scale=1,notes=[],pageViews=[],adding=false,editing=null,pendingNew=null;
+// notes: {id,page(1-based),x,y (PDF user-space, top-left of icon point),text,created}
+
+// ===EXPORT-START===
+async function buildAnnotatedPdf(srcBytes, notes, PDFLib, strokes){
+  strokes=strokes||[];
+  const hex2rgb=h=>{h=(h||'#000000').replace('#','');if(h.length===3)h=h.split('').map(c=>c+c).join('');return [0,2,4].map(i=>Math.round(parseInt(h.substr(i,2),16)/255*1000)/1000)};
+  const {PDFDocument,PDFName,PDFHexString,PDFString,PDFArray}=PDFLib;
+  const doc=await PDFDocument.load(srcBytes,{ignoreEncryption:true});
+  const pages=doc.getPages();
+  // remove existing Text annotations (they were loaded as notes) to avoid duplicates
+  pages.forEach(p=>{
+    const annots=p.node.lookup(PDFName.of('Annots'));
+    if(!(annots instanceof PDFArray))return;
+    for(let i=annots.size()-1;i>=0;i--){
+      const a=annots.lookup(i);
+      const st=a&&a.get&&a.get(PDFName.of('Subtype'));if(st===PDFName.of('Text')||st===PDFName.of('Ink'))annots.remove(i);
+    }
+  });
+  for(const n of notes){
+    const p=pages[n.page-1]; if(!p)continue;
+    const now=PDFString.fromDate(new Date(n.created||Date.now()));
+    const annot=doc.context.obj({
+      Type:'Annot',Subtype:'Text',
+      Rect:[n.x,n.y-20,n.x+20,n.y],
+      Contents:PDFHexString.fromText(n.text||''),
+      T:PDFHexString.fromText(n.author||'Alan'),
+      NM:PDFHexString.fromText(n.id),
+      Name:'Comment',Open:false,F:4,C:n.color?hex2rgb(n.color):[1,0.82,0.25],M:now,
+      PNR_FontSize:n.fontSize||13,PNR_Color:PDFHexString.fromText(n.color||'')
+    });
+    p.node.addAnnot(doc.context.register(annot));
+  }
+  for(const k of strokes){
+    const p=pages[k.page-1]; if(!p||!k.points||k.points.length<2)continue;
+    const w=k.width||2,op=k.opacity==null?1:k.opacity,c=hex2rgb(k.color);
+    const xs=k.points.map(q=>q[0]),ys=k.points.map(q=>q[1]);
+    const rect=[Math.min(...xs)-w,Math.min(...ys)-w,Math.max(...xs)+w,Math.max(...ys)+w];
+    const f=v=>(+v).toFixed(2);
+    const ops=`q /GS0 gs ${c.map(f).join(' ')} RG ${f(w)} w 1 J 1 j `+k.points.map((q,i)=>`${f(q[0])} ${f(q[1])} ${i?'l':'m'}`).join(' ')+' S Q';
+    const gs=doc.context.obj({Type:'ExtGState',CA:op,ca:op});
+    const ap=doc.context.stream(ops,{Type:'XObject',Subtype:'Form',BBox:rect,Resources:{ExtGState:{GS0:gs}}});
+    const annot=doc.context.obj({
+      Type:'Annot',Subtype:'Ink',Rect:rect,InkList:[k.points.flat()],C:c,CA:op,F:4,
+      BS:{Type:'Border',W:w,S:'S'},NM:PDFHexString.fromText(k.id||''),T:PDFHexString.fromText('Alan'),
+      M:PDFString.fromDate(new Date(k.created||Date.now())),AP:{N:doc.context.register(ap)}
+    });
+    p.node.addAnnot(doc.context.register(annot));
+  }
+  return await doc.save();
+}
+// ===EXPORT-END===
+
+function setStatus(s){$('status').textContent=s}
+function uid(){return 'n'+Date.now().toString(36)+Math.random().toString(36).slice(2,7)}
+function save(){ if(key){ try{localStorage.setItem(key,JSON.stringify({notes,strokes}))}catch(e){setStatus('保存失败：'+e.message)} } }
+
+async function openFile(f){
+  if(!f)return; if(!/pdf$/i.test(f.type)&&!/\.pdf$/i.test(f.name)){alert('请选择 PDF 文件');return}
+  bytes=new Uint8Array(await f.arrayBuffer()); fileName=f.name; key='pdfnotes:'+f.name+':'+f.size;
+  try{pdf=await pdfjsLib.getDocument({data:bytes.slice()}).promise}catch(e){alert('无法打开 PDF：'+e.message);return}
+  const stored=localStorage.getItem(key);
+  undoStack=[];if(stored){const j=JSON.parse(stored);notes=Array.isArray(j)?j:(j.notes||[]);strokes=Array.isArray(j)?[]:(j.strokes||[])}else{const r=await loadExistingAnnots();notes=r.notes;strokes=r.strokes;save()}
+  ['add','draw','exp','ejson'].forEach(i=>$(i).disabled=false);
+  $('drop').style.display='none';
+  await fitWidth();
+  setStatus(`${fileName} · ${pdf.numPages} 页 · ${notes.length} 条笔记 · ${strokes.length} 条画线`+(stored?'（已恢复）':''));
+}
+async function loadExistingAnnots(){
+  const out=[],ink=[],toHex=c=>c&&c.length>=3?'#'+[0,1,2].map(i=>(c[i]|0).toString(16).padStart(2,'0')).join(''):null;
+  for(let i=1;i<=pdf.numPages;i++){
+    const pg=await pdf.getPage(i); const an=await pg.getAnnotations();
+    for(const a of an){ if(a.subtype!=='Text')continue;
+      const txt=(a.contentsObj&&a.contentsObj.str)||a.contents||'';
+      out.push({id:uid(),page:i,x:a.rect[0],y:a.rect[3],text:txt,author:(a.titleObj&&a.titleObj.str)||undefined,created:Date.now(),imported:true,color:toHex(a.color)||undefined});
+    }
+    for(const a of an){ if(a.subtype!=='Ink'||!a.inkLists)continue;
+      for(const L of a.inkLists){ if(L.length<2)continue;
+        ink.push({id:uid(),page:i,color:toHex(a.color)||'#000000',width:(a.borderStyle&&a.borderStyle.width)||1,opacity:a.opacity==null?1:a.opacity,points:L.map(q=>[q.x,q.y]),created:Date.now(),imported:true}); }
+    }
+  }
+  return {notes:out,strokes:ink};
+}
+async function fitWidth(){
+  const pg=await pdf.getPage(1); const vp=pg.getViewport({scale:1});
+  scale=Math.max(0.3,Math.min(4,($('view').clientWidth-48)/vp.width)); await render();
+}
+let renderToken=0;
+async function render(){
+  const tok=++renderToken; $('zl').textContent=Math.round(scale*100)+'%';
+  const box=$('pages'); box.innerHTML=''; pageViews=[];
+  const dpr=window.devicePixelRatio||1;
+  for(let i=1;i<=pdf.numPages;i++){
+    const pg=await pdf.getPage(i); if(tok!==renderToken)return;
+    const vp=pg.getViewport({scale});
+    const div=document.createElement('div'); div.className='page'; div.style.width=vp.width+'px'; div.style.height=vp.height+'px'; div.dataset.page=i;
+    const c=document.createElement('canvas'); c.width=vp.width*dpr; c.height=vp.height*dpr; c.style.width=vp.width+'px'; c.style.height=vp.height+'px';
+    div.appendChild(c); const l=document.createElement('div'); l.className='lbl'; l.textContent='第 '+i+' 页'; div.appendChild(l);
+    box.appendChild(div); pageViews[i]={div,vp};
+    div.addEventListener('click',e=>onPageClick(e,i));
+    const svg=document.createElementNS(NS,'svg');svg.setAttribute('class','ink');svg.setAttribute('width',vp.width);svg.setAttribute('height',vp.height);div.appendChild(svg);pageViews[i].svg=svg;
+    div.addEventListener('pointerdown',e=>startStroke(e,i));
+    pg.render({canvasContext:c.getContext('2d'),viewport:vp,transform:dpr!==1?[dpr,0,0,dpr,0,0]:null});
+    drawMarkers(i);drawStrokes(i);
+  }
+  renderList();
+}
+const NS='http://www.w3.org/2000/svg';
+function strokeEl(k,vp){const el=document.createElementNS(NS,'polyline');
+  el.setAttribute('points',k.points.map(q=>vp.convertToViewportPoint(q[0],q[1]).join(',')).join(' '));
+  el.setAttribute('fill','none');el.setAttribute('stroke',k.color);el.setAttribute('stroke-width',Math.max(0.5,k.width*scale));
+  el.setAttribute('stroke-linecap','round');el.setAttribute('stroke-linejoin','round');el.setAttribute('stroke-opacity',k.opacity==null?1:k.opacity);
+  el.addEventListener('click',e=>{if(!eraseMode)return;e.stopPropagation();strokes=strokes.filter(s=>s!==k);undoStack.push({t:'del',k});save();drawStrokes(k.page);setStatus('已删除一条画线')});
+  return el}
+function drawStrokes(i){const pv=pageViews[i];if(!pv||!pv.svg)return;pv.svg.innerHTML='';strokes.filter(k=>k.page===i).forEach(k=>pv.svg.appendChild(strokeEl(k,pv.vp)))}
+function startStroke(e,i){
+  if(!drawMode||e.button>0)return; e.preventDefault();
+  const pv=pageViews[i],r=pv.div.getBoundingClientRect(),hl=$('hl').checked;
+  const k={id:uid(),page:i,color:penColor,width:+$('lw').value*(hl?4:1),opacity:hl?0.35:1,points:[],created:Date.now()};
+  const add=ev=>{const p=pv.vp.convertToPdfPoint(ev.clientX-r.left,ev.clientY-r.top);const l=k.points[k.points.length-1];if(!l||Math.hypot(p[0]-l[0],p[1]-l[1])>0.8/scale)k.points.push(p)};
+  add(e);const el=strokeEl(k,pv.vp);pv.svg.appendChild(el);
+  const move=ev=>{(ev.getCoalescedEvents?ev.getCoalescedEvents():[ev]).forEach(add);el.setAttribute('points',k.points.map(q=>pv.vp.convertToViewportPoint(q[0],q[1]).join(',')).join(' '))};
+  const up=()=>{removeEventListener('pointermove',move);removeEventListener('pointerup',up);
+    if(k.points.length===1)k.points.push([k.points[0][0]+0.5,k.points[0][1]]);
+    strokes.push(k);undoStack.push({t:'add',k});save();drawStrokes(i)};
+  addEventListener('pointermove',move);addEventListener('pointerup',up);
+}
+function undo(){const a=undoStack.pop();if(!a){setStatus('没有可撤销的操作');return}
+  if(a.t==='add')strokes=strokes.filter(s=>s!==a.k);else if(a.t==='del')strokes.push(a.k);else if(a.t==='clr')strokes.push(...a.ks);
+  save();for(let i=1;i<=(pdf?pdf.numPages:0);i++)drawStrokes(i)}
+function visiblePage(){const V=$('view'),mid=V.scrollTop+V.clientHeight/2;let best=1;pageViews.forEach((pv,i)=>{if(pv&&pv.div.offsetTop<=mid)best=i});return best}
+function setDraw(v){drawMode=v;if(v){eraseMode=false;setAdding(false)}$('draw').classList.toggle('on',v||eraseMode);$('eraser').classList.toggle('on',eraseMode);
+  document.body.classList.toggle('drawing',v);document.body.classList.toggle('erasing',eraseMode);if(v)setStatus('手绘模式：在页面上拖动画线')}
+function setErase(v){eraseMode=v;if(v){drawMode=false;document.body.classList.remove('drawing')}else if($('draw').classList.contains('on'))drawMode=true;
+  document.body.classList.toggle('drawing',drawMode);document.body.classList.toggle('erasing',v);$('eraser').classList.toggle('on',v);if(v)setStatus('橡皮擦：点击某条线将其删除')}
+function drawMarkers(i){
+  const pv=pageViews[i]; if(!pv)return;
+  pv.div.querySelectorAll('.mk').forEach(m=>m.remove());
+  notes.filter(n=>n.page===i).forEach((n,k)=>{
+    const [vx,vy]=pv.vp.convertToViewportPoint(n.x,n.y);
+    const m=document.createElement('div'); m.className='mk'; m.id='mk-'+n.id; m.textContent='📝';
+    m.style.left=vx+'px'; m.style.top=(vy+22)+'px';
+    const t=document.createElement('div'); t.className='tip'; t.textContent=n.text||'（空）'; t.style.fontSize=(n.fontSize||13)+'px'; t.style.color=n.color||'#333'; m.appendChild(t); m.style.borderColor=n.color||'#b88a00';
+    m.addEventListener('click',e=>{e.stopPropagation();openPop(n,e.clientX,e.clientY)});
+    pv.div.appendChild(m);
+  });
+}
+function onPageClick(e,i){
+  if(!adding||drawMode||eraseMode)return;
+  const r=pageViews[i].div.getBoundingClientRect();
+  const [x,y]=pageViews[i].vp.convertToPdfPoint(e.clientX-r.left,e.clientY-r.top);
+  pendingNew={id:uid(),page:i,x,y,text:'',created:Date.now(),fontSize:defaults.fontSize,color:defaults.color};
+  openPop(pendingNew,e.clientX,e.clientY,true);
+  setAdding(false);
+}
+function openPop(n,cx,cy,isNew){
+  editing=n; const p=$('pop'); p.style.display='block';
+  p.style.left=Math.min(cx+10,innerWidth-300)+'px'; p.style.top=Math.min(cy+10,innerHeight-190)+'px';
+  $('poph').textContent=(isNew?'新笔记':'编辑笔记')+' · 第 '+n.page+' 页'; $('ptxt').value=n.text; $('pfs').value=n.fontSize||defaults.fontSize; $('pcol').value=n.color||defaults.color; $('pdef').checked=false; const ap=()=>{$('ptxt').style.fontSize=$('pfs').value+'px';$('ptxt').style.color=$('pcol').value};ap();$('pfs').oninput=$('pcol').oninput=ap; $('pdel').style.display=isNew?'none':'';
+  $('ptxt').focus();
+}
+function closePop(){$('pop').style.display='none';editing=null;pendingNew=null}
+$('psave').onclick=()=>{ if(!editing)return; editing.text=$('ptxt').value; editing.fontSize=Math.max(8,Math.min(40,+$('pfs').value||13)); editing.color=$('pcol').value;
+  if($('pdef').checked)setDefaults(editing.fontSize,editing.color);
+  if(editing===pendingNew)notes.push(editing); save(); const pg=editing.page; closePop(); drawMarkers(pg); renderList(); };
+$('pcancel').onclick=closePop;
+$('pdel').onclick=()=>{ if(!editing||!confirm('确定删除这条笔记？'))return; const pg=editing.page; notes=notes.filter(n=>n!==editing); save(); closePop(); drawMarkers(pg); renderList(); };
+$('ptxt').addEventListener('keydown',e=>{if(e.key==='Enter'&&(e.ctrlKey||e.metaKey))$('psave').click(); if(e.key==='Escape')closePop()});
+function renderList(){
+  const L=$('list'); L.innerHTML=''; if(!notes.length){L.textContent='暂无笔记';return}
+  const by={}; notes.forEach(n=>(by[n.page]=by[n.page]||[]).push(n));
+  Object.keys(by).map(Number).sort((a,b)=>a-b).forEach(p=>{
+    const h=document.createElement('div'); h.className='pg'; h.textContent='第 '+p+' 页'; L.appendChild(h);
+    by[p].sort((a,b)=>b.y-a.y||a.x-b.x).forEach(n=>{
+      const d=document.createElement('div'); d.className='item'; d.textContent=n.text||'（空）'; d.style.fontSize=(n.fontSize||13)+'px'; d.style.color=n.color||'#333'; d.style.borderLeft='4px solid '+(n.color||'#ffd23f'); d.onclick=()=>jump(n); L.appendChild(d);
+    });
+  });
+}
+function jump(n){
+  const pv=pageViews[n.page]; if(!pv)return; const [vx,vy]=pv.vp.convertToViewportPoint(n.x,n.y);
+  const V=$('view'); V.scrollTo({top:pv.div.offsetTop+vy-V.clientHeight/3,left:Math.max(0,pv.div.offsetLeft+vx-V.clientWidth/2),behavior:'smooth'});
+  const m=$('mk-'+n.id); if(m){m.classList.add('hl');setTimeout(()=>m.classList.remove('hl'),1500)}
+}
+function setAdding(v){adding=v;$('add').classList.toggle('on',v);document.body.classList.toggle('adding',v);if(v)setStatus('添加笔记模式：点击页面任意位置放置笔记（Esc 取消）')}
+$('add').onclick=()=>{if(!adding){setDraw(false);setErase(false);document.body.classList.remove('erasing')}setAdding(!adding)};
+$('draw').onclick=()=>{const on=$('draw').classList.contains('on');eraseMode=false;setDraw(!on)};
+$('eraser').onclick=()=>setErase(!eraseMode);$('undo').onclick=undo;
+$('clrpg').onclick=()=>{const p=visiblePage(),ks=strokes.filter(k=>k.page===p);if(!ks.length||!confirm('清除第 '+p+' 页的 '+ks.length+' 条画线？'))return;strokes=strokes.filter(k=>k.page!==p);undoStack.push({t:'clr',ks});save();drawStrokes(p)};
+['#e53935','#1e66f5','#2e9e44','#fdd835','#fb8c00','#8e24aa','#000000'].forEach((c,i)=>{const s=document.createElement('span');s.className='sw'+(i?'':' sel');s.style.background=c;s.title=c;s.onclick=()=>{penColor=c;document.querySelectorAll('.sw').forEach(x=>x.classList.toggle('sel',x===s))};$('pal').appendChild(s)});
+$('ccol').oninput=e=>{penColor=e.target.value;document.querySelectorAll('.sw').forEach(x=>x.classList.remove('sel'))};
+$('lw').oninput=e=>$('lwv').textContent=e.target.value;
+function setDefaults(fs,c){defaults={fontSize:fs,color:c};localStorage.setItem('pdfnotes:defaults',JSON.stringify(defaults));$('dfs').value=fs;$('dcol').value=c}
+$('dfs').value=defaults.fontSize;$('dcol').value=defaults.color;
+$('dfs').onchange=()=>setDefaults(Math.max(8,Math.min(40,+$('dfs').value||13)),$('dcol').value);$('dcol').onchange=()=>setDefaults(defaults.fontSize,$('dcol').value);
+document.addEventListener('keydown',e=>{if(e.key==='Escape'){if(adding)setAdding(false);if(drawMode||eraseMode){eraseMode=false;setDraw(false)}}
+  if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='z'&&document.activeElement.tagName!=='TEXTAREA'&&pdf){e.preventDefault();undo()}});
+async function zoom(f){ if(!pdf)return; const V=$('view'); const rel=V.scrollTop/(V.scrollHeight||1); scale=Math.max(0.3,Math.min(4,scale*f)); await render(); V.scrollTop=rel*V.scrollHeight; }
+$('zin').onclick=()=>zoom(1.2); $('zout').onclick=()=>zoom(1/1.2); $('zfit').onclick=()=>pdf&&fitWidth();
+$('file').onchange=e=>{openFile(e.target.files[0]);e.target.value=''};
+['dragenter','dragover'].forEach(t=>document.addEventListener(t,e=>{e.preventDefault();document.body.classList.add('drag')}));
+['dragleave','drop'].forEach(t=>document.addEventListener(t,e=>{e.preventDefault();if(t==='drop'||e.target===document.documentElement||!e.relatedTarget)document.body.classList.remove('drag')}));
+document.addEventListener('drop',e=>{const f=e.dataTransfer.files[0];if(f)openFile(f)});
+function download(data,name,type){const u=URL.createObjectURL(new Blob([data],{type}));const a=document.createElement('a');a.href=u;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(u),5000)}
+$('exp').onclick=async()=>{ try{ setStatus('正在导出…'); const out=await buildAnnotatedPdf(bytes,notes,PDFLib,strokes);
+  download(out,fileName.replace(/\.pdf$/i,'')+'_带笔记.pdf','application/pdf'); setStatus('已导出 '+notes.length+' 条笔记、'+strokes.length+' 条画线'); }catch(e){alert('导出失败：'+e.message)} };
+$('ejson').onclick=()=>download(JSON.stringify({app:'pdf-notes-reader',file:fileName,key,exported:new Date().toISOString(),notes,strokes},null,2),fileName.replace(/\.pdf$/i,'')+'_笔记.json','application/json');
+$('ijson').onchange=async e=>{ const f=e.target.files[0]; e.target.value=''; if(!f)return;
+  if(!pdf){alert('请先打开对应的 PDF');return}
+  try{ const j=JSON.parse(await f.text()); const arr=Array.isArray(j)?j:j.notes; if(!Array.isArray(arr))throw new Error('格式不正确');
+    if(j.file&&j.file!==fileName&&!confirm(`该备份来自「${j.file}」，仍要导入到当前文件？`))return;
+    const replace=confirm('点“确定”替换现有笔记，点“取消”合并到现有笔记');
+    const valid=arr.filter(n=>n&&typeof n.page==='number'&&typeof n.x==='number'&&typeof n.y==='number').map(n=>({...n,id:n.id||uid(),text:String(n.text||'')}));
+    if(replace)notes=valid;else{const ids=new Set(notes.map(n=>n.id));valid.forEach(n=>{if(!ids.has(n.id))notes.push(n)})}
+    const ks=(Array.isArray(j)?[]:(j.strokes||[])).filter(k=>k&&typeof k.page==='number'&&Array.isArray(k.points)&&k.points.length>1).map(k=>({...k,id:k.id||uid()}));
+    if(replace)strokes=ks;else{const ids=new Set(strokes.map(k=>k.id));ks.forEach(k=>{if(!ids.has(k.id))strokes.push(k)})}
+    save(); for(let i=1;i<=pdf.numPages;i++){drawMarkers(i);drawStrokes(i)} renderList(); setStatus('已导入 '+valid.length+' 条笔记、'+ks.length+' 条画线');
+  }catch(err){alert('导入失败：'+err.message)} };
+</script></body></html>
