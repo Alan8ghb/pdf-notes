@@ -33,6 +33,7 @@ body.adding #bNote,body.drawing #bDraw,body.erasing #bDraw{background:#e6a100}
 .page canvas{display:block}.page .lbl{position:absolute;left:-2px;top:-15px;font-size:11px;color:#888}
 .adding .page{cursor:crosshair}
 .nbox{position:absolute;z-index:3;background:rgba(255,248,200,.72);border:1px solid rgba(184,138,0,.55);border-radius:3px;padding:2px 3px;cursor:pointer;touch-action:none;user-select:none;-webkit-user-select:none}
+.nbox .ndt{color:#999;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.item .idt,#pdt{font-size:11px;color:#999;margin-bottom:2px}
 .nbox .ntx{display:-webkit-box;-webkit-box-orient:vertical;overflow:hidden;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;line-height:1.3;max-height:100%}
 .nbox.sel{outline:2px solid #1e66f5;z-index:4}.nbox.hl{outline:3px solid #e33}.nbox.preview{background:rgba(30,102,245,.12);border:1.5px dashed #1e66f5;pointer-events:none}
 .nbox .hd{position:absolute;width:18px;height:18px;background:#1e66f5;border:2px solid #fff;border-radius:50%;box-shadow:0 0 2px rgba(0,0,0,.4);touch-action:none}
@@ -74,7 +75,7 @@ body.erasing svg.ink polyline:hover{filter:drop-shadow(0 0 2px #e33)}
 <label class="btn">📥 导入笔记 JSON<input type="file" id="ijson" accept=".json,application/json" hidden></label></div>
 <div class="menu" id="mNote"><h4>笔记</h4>
 <button id="add" disabled>📍 添加笔记（在页面拖出方框）</button>
-<div class="row">默认字号 <input id="dfs" type="number" min="8" max="40" value="13" style="width:56px"></div>
+<div class="row">默认字号 <input id="dfs" type="number" min="8" max="40" value="20" style="width:56px"></div>
 <div class="row">默认颜色 <input id="dcol" type="color" value="#333333"></div></div>
 <div class="menu" id="mDraw"><h4>手绘画线</h4>
 <button id="draw" disabled>✏️ 手绘画线</button>
@@ -88,16 +89,21 @@ body.erasing svg.ink polyline:hover{filter:drop-shadow(0 0 2px #e33)}
 <div id="drop">拖放 PDF 到此处，或点 📁 打开 PDF</div><div id="pages"></div>
 <div id="shade"></div>
 <div id="side"><div class="hd"><h3 style="margin:4px 0">笔记列表</h3><button class="ib" id="sideX" style="color:#333">✕</button></div><div id="list">暂无笔记</div></div>
-<div id="pop"><div id="poph" style="font-size:13px;color:#666;margin-bottom:4px"></div><textarea id="ptxt" rows="3" placeholder="输入笔记内容…"></textarea>
+<div id="pop"><div id="poph" style="font-size:13px;color:#666;margin-bottom:2px"></div><div id="pdt"></div><textarea id="ptxt" rows="3" placeholder="输入笔记内容…"></textarea>
 <div class="opt">字号<input id="pfs" type="number" min="6" max="40" style="width:50px"> 文字颜色<input id="pcol" type="color"> <label><input type="checkbox" id="pdef">设为默认</label></div>
 <div class="r"><button id="pdel">删除</button><button id="pcancel">取消</button><button id="psave">保存</button></div></div>
 <script>
 pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 const $=id=>document.getElementById(id);
-let strokes=[],drawMode=false,eraseMode=false,undoStack=[],penColor='#e53935',defaults=JSON.parse(localStorage.getItem('pdfnotes:defaults')||'{"fontSize":13,"color":"#333333"}');
+let strokes=[],drawMode=false,eraseMode=false,undoStack=[],penColor='#e53935',defaults=JSON.parse(localStorage.getItem('pdfnotes:defaults')||'{"fontSize":20,"color":"#333333"}');
+// one-time migration: old built-in default 13 -> new built-in default 20 (per-note sizes untouched)
+if(!localStorage.getItem('pdfnotes:defaultsV2')){if(defaults.fontSize===13){defaults.fontSize=20;localStorage.setItem('pdfnotes:defaults',JSON.stringify(defaults))}localStorage.setItem('pdfnotes:defaultsV2','1')}
+const pad2=v=>String(v).padStart(2,'0');
+function fmtDate(t,withTime){if(!t)return '—';const d=new Date(t);if(isNaN(d))return '—';return d.getFullYear()+'-'+pad2(d.getMonth()+1)+'-'+pad2(d.getDate())+(withTime?' '+pad2(d.getHours())+':'+pad2(d.getMinutes()):'')}
+function pdfDate(sv){try{const d=sv&&pdfjsLib.PDFDateString.toDateObject(sv);return d&&!isNaN(d)?d.getTime():undefined}catch(e){return undefined}}
 let rangeBytes=0,curFile=null,pageProxies=[],baseVps=[],io=null,rendered=new Map(),saveWarned=false;
 let pdf=null,bytes=null,fileName='',key='',scale=1,notes=[],pageViews=[],adding=false,editing=null,pendingNew=null;
-// notes: {id,page(1-based),x,y (PDF user-space, top-left of icon point),text,created}
+// notes: {id,page,x,y (PDF top-left),w,h,text,fontSize,color,created,modified (ms timestamps; may be missing for old notes)}
 
 // ===EXPORT-START===
 async function buildAnnotatedPdf(srcBytes, notes, PDFLib, strokes, opts){
@@ -117,16 +123,17 @@ async function buildAnnotatedPdf(srcBytes, notes, PDFLib, strokes, opts){
   });
   for(const n of notes){
     const p=pages[n.page-1]; if(!p)continue;
-    const now=PDFString.fromDate(new Date(n.created||Date.now()));
     const w=n.w||140,h=n.h||70,fs=n.fontSize||13,c=hex2rgb(n.color||'#333333'),rect=[n.x,n.y-h,n.x+w,n.y];
     const dict={
       Type:'Annot',Subtype:'FreeText',Rect:rect,
       Contents:PDFHexString.fromText(n.text||''),
       DA:PDFString.of(`/Helv ${fs} Tf ${c.join(' ')} rg`),DS:PDFString.of(`font: ${fs}pt sans-serif; color: ${n.color||'#333333'}`),
-      T:PDFHexString.fromText(n.author||'Alan'),NM:PDFHexString.fromText(n.id),F:4,M:now,
+      T:PDFHexString.fromText(n.author||'Alan'),NM:PDFHexString.fromText(n.id),F:4,
       BS:{Type:'Border',W:0.5,S:'S'},IC:[1,0.973,0.784],
       PNR_FontSize:fs,PNR_Color:PDFHexString.fromText(n.color||'')
     };
+    if(n.created)dict.CreationDate=PDFString.fromDate(new Date(n.created));
+    if(n.modified||n.created)dict.M=PDFString.fromDate(new Date(n.modified||n.created));
     if(opts.noteImage){ // appearance = pre-rendered image of the box (handles CJK without embedding a font)
       const png=await opts.noteImage(n,w,h); if(png){ const img=await doc.embedPng(png);
         // empty BT/ET carries font size + color so readers (e.g. pdf.js) can recover them from the appearance
@@ -159,7 +166,9 @@ async function buildAnnotatedPdf(srcBytes, notes, PDFLib, strokes, opts){
 async function noteToPng(n,w,h){
   const k=3,c=document.createElement('canvas');c.width=Math.ceil(w*k);c.height=Math.ceil(h*k);const g=c.getContext('2d');
   g.fillStyle='rgba(255,248,200,0.8)';g.fillRect(0,0,c.width,c.height);g.strokeStyle='rgba(184,138,0,0.6)';g.lineWidth=k;g.strokeRect(k/2,k/2,c.width-k,c.height-k);
-  const fs=(n.fontSize||13)*k,lh=fs*1.3,pad=3*k,maxW=c.width-2*pad,maxL=Math.max(1,Math.floor((c.height-2*pad)/lh));
+  const fs=(n.fontSize||13)*k,lh=fs*1.3,pad=3*k,maxW=c.width-2*pad,dfs=Math.max(6*k,fs*0.6),dh=dfs*1.3;
+  g.font=`${dfs}px system-ui,sans-serif`;g.fillStyle='#888';g.textBaseline='top';g.fillText(fmtDate(n.modified||n.created),pad,pad);
+  const top=pad+dh,maxL=Math.max(1,Math.floor((c.height-top-pad)/lh));
   g.font=`${fs}px system-ui,"PingFang SC","Noto Sans CJK SC","Microsoft YaHei",sans-serif`;g.fillStyle=n.color||'#333';g.textBaseline='top';
   const lines=[];let over=false;
   for(const para of String(n.text||'').split('\n')){let cur='';
@@ -167,7 +176,7 @@ async function noteToPng(n,w,h){
     lines.push(cur); if(lines.length>maxL){over=true;break}}
   if(lines.length>maxL){over=true;lines.length=maxL}
   if(over){let last=lines[maxL-1]||'';while(last&&g.measureText(last+'…').width>maxW)last=Array.from(last).slice(0,-1).join('');lines[maxL-1]=last+'…'}
-  lines.forEach((t,i)=>g.fillText(t,pad,pad+i*lh+(lh-fs)/2));
+  lines.forEach((t,i)=>g.fillText(t,pad,top+i*lh+(lh-fs)/2));
   const b=await new Promise(r=>c.toBlob(r,'image/png'));c.width=c.height=0;return new Uint8Array(await b.arrayBuffer());
 }
 function showError(msg){let o=document.getElementById('errbox');if(!o){o=document.createElement('div');o.id='errbox';
@@ -203,11 +212,11 @@ async function loadExistingAnnots(){
     const pg=await pdf.getPage(i); const an=await pg.getAnnotations();
     for(const a of an){ if(a.subtype!=='FreeText')continue; const da=a.defaultAppearanceData||{};
       out.push({id:uid(),page:i,x:a.rect[0],y:a.rect[3],w:Math.max(10,a.rect[2]-a.rect[0]),h:Math.max(10,a.rect[3]-a.rect[1]),text:(a.contentsObj&&a.contentsObj.str)||a.contents||'',
-        fontSize:da.fontSize||13,color:toHex(da.fontColor)||'#333333',author:(a.titleObj&&a.titleObj.str)||undefined,created:Date.now(),imported:true});
+        fontSize:da.fontSize||13,color:toHex(da.fontColor)||'#333333',author:(a.titleObj&&a.titleObj.str)||undefined,created:pdfDate(a.creationDate)||pdfDate(a.modificationDate),modified:pdfDate(a.modificationDate),imported:true});
     }
     for(const a of an){ if(a.subtype!=='Text')continue;
       const txt=(a.contentsObj&&a.contentsObj.str)||a.contents||'';
-      out.push({id:uid(),page:i,x:a.rect[0],y:a.rect[3],w:140,h:70,text:txt,author:(a.titleObj&&a.titleObj.str)||undefined,created:Date.now(),imported:true,color:(a.color&&(0.299*a.color[0]+0.587*a.color[1]+0.114*a.color[2])<170)?toHex(a.color):undefined});
+      out.push({id:uid(),page:i,x:a.rect[0],y:a.rect[3],w:140,h:70,text:txt,author:(a.titleObj&&a.titleObj.str)||undefined,created:pdfDate(a.creationDate)||pdfDate(a.modificationDate),modified:pdfDate(a.modificationDate),imported:true,color:(a.color&&(0.299*a.color[0]+0.587*a.color[1]+0.114*a.color[2])<170)?toHex(a.color):undefined});
     }
     for(const a of an){ if(a.subtype!=='Ink'||!a.inkLists)continue;
       for(const L of a.inkLists){ if(L.length<2)continue;
@@ -306,7 +315,7 @@ function viewRect(n,vp){const a=vp.convertToViewportPoint(n.x,n.y),b=vp.convertT
 function setFromView(n,vp,l,t,w,h){const a=vp.convertToPdfPoint(l,t),b=vp.convertToPdfPoint(l+w,t+h);
   n.x=+Math.min(a[0],b[0]).toFixed(2);n.y=+Math.max(a[1],b[1]).toFixed(2);n.w=+Math.abs(b[0]-a[0]).toFixed(2);n.h=+Math.abs(b[1]-a[1]).toFixed(2)}
 function placeBox(el,r){el.style.left=r.l+'px';el.style.top=r.t+'px';el.style.width=r.w+'px';el.style.height=r.h+'px'}
-function clampBox(el,n){const tx=el.querySelector('.ntx');if(!tx)return;const lh=(n.fontSize||13)*scale*1.3;tx.style.webkitLineClamp=Math.max(1,Math.floor((el.clientHeight-4)/lh))}
+function clampBox(el,n){const tx=el.querySelector('.ntx'),dt=el.querySelector('.ndt');if(!tx)return;const lh=(n.fontSize||13)*scale*1.3;tx.style.webkitLineClamp=Math.max(1,Math.floor((el.clientHeight-4-(dt?dt.offsetHeight:0))/lh))}
 function drawMarkers(i){
   const pv=pageViews[i]; if(!pv)return;
   pv.div.querySelectorAll('.nbox:not(.preview)').forEach(m=>m.remove());
@@ -314,6 +323,7 @@ function drawMarkers(i){
     if(!n.w||!n.h){n.w=140;n.h=70}
     const el=document.createElement('div'); el.className='nbox'+(selNote===n?' sel':''); el.id='nb-'+n.id;
     placeBox(el,viewRect(n,pv.vp));
+    const dt=document.createElement('div'); dt.className='ndt'; dt.textContent=fmtDate(n.modified||n.created); dt.style.fontSize=Math.max(8,(n.fontSize||13)*scale*0.6)+'px'; el.appendChild(dt);
     const tx=document.createElement('div'); tx.className='ntx'; tx.textContent=n.text||'（空笔记）';
     tx.style.fontSize=((n.fontSize||13)*scale)+'px'; tx.style.color=n.color||'#333'; if(!n.text)tx.style.opacity=.5;
     el.appendChild(tx);
@@ -335,7 +345,7 @@ function boxDrag(e,n,el,pv,corner){
     placeBox(el,r);clampBox(el,n);el._r=r};
   const up=()=>{removeEventListener('pointermove',move);removeEventListener('pointerup',up);removeEventListener('pointercancel',up);
     if(pinch)return drawMarkers(pv.div.dataset.page|0);
-    if(moved&&el._r){const r=el._r;setFromView(n,pv.vp,r.l,r.t,r.w,r.h);save();drawMarkers(n.page)}
+    if(moved&&el._r){const r=el._r;setFromView(n,pv.vp,r.l,r.t,r.w,r.h);n.modified=Date.now();save();drawMarkers(n.page)}
     else if(!corner){const prev=selNote;selNote=n;if(prev&&prev!==n&&prev.page!==n.page)drawMarkers(prev.page);drawMarkers(n.page);
       const b=el.getBoundingClientRect();openPop(n,b.left,b.bottom)}};
   addEventListener('pointermove',move);addEventListener('pointerup',up);addEventListener('pointercancel',up);
@@ -357,15 +367,16 @@ function startNoteRect(e,i){
   addEventListener('pointermove',move);addEventListener('pointerup',up);addEventListener('pointercancel',up);
 }
 function openPop(n,cx,cy,isNew){
-  editing=n; n._orig={fontSize:n.fontSize,color:n.color}; const p=$('pop'); p.style.display='block';
+  editing=n; n._orig={fontSize:n.fontSize,color:n.color,text:n.text}; const p=$('pop'); p.style.display='block';
   p.style.left=Math.min(cx+10,innerWidth-300)+'px'; p.style.top=Math.min(cy+10,innerHeight-190)+'px';
-  $('poph').textContent=(isNew?'新笔记':'编辑笔记')+' · 第 '+n.page+' 页'; $('ptxt').value=n.text; $('pfs').value=n.fontSize||defaults.fontSize; $('pcol').value=n.color||defaults.color; $('pdef').checked=false; const ap=()=>{$('ptxt').style.fontSize=$('pfs').value+'px';$('ptxt').style.color=$('pcol').value;autoGrow();
+  $('poph').textContent=(isNew?'新笔记':'编辑笔记')+' · 第 '+n.page+' 页'; $('pdt').textContent='创建 '+fmtDate(n.created,1)+(n.modified?' · 修改 '+fmtDate(n.modified,1):''); $('ptxt').value=n.text; $('pfs').value=n.fontSize||defaults.fontSize; $('pcol').value=n.color||defaults.color; $('pdef').checked=false; const ap=()=>{$('ptxt').style.fontSize=$('pfs').value+'px';$('ptxt').style.color=$('pcol').value;autoGrow();
     if(editing){editing.fontSize=Math.max(6,Math.min(40,+$('pfs').value||13));editing.color=$('pcol').value;drawMarkers(editing.page)}};ap();$('pfs').oninput=$('pcol').oninput=ap; $('pdel').style.display=isNew?'none':'';
   autoGrow(); $('ptxt').focus();
 }
 function autoGrow(){const t=$('ptxt');t.style.height='auto';const lh=parseFloat(getComputedStyle(t).lineHeight)||20;t.style.height=Math.max(t.scrollHeight+2,lh*3+10)+'px'}
 function closePop(){const pn=pendingNew;$('pop').style.display='none';editing=null;pendingNew=null;if(pn){notes=notes.filter(n=>n!==pn);if(selNote===pn)selNote=null;drawMarkers(pn.page)}}
-$('psave').onclick=()=>{ if(!editing)return; editing.text=$('ptxt').value; editing.fontSize=Math.max(6,Math.min(40,+$('pfs').value||13)); delete editing._orig; editing.color=$('pcol').value;
+$('psave').onclick=()=>{ if(!editing)return; const o=editing._orig||{}; const isNewNote=editing===pendingNew; editing.text=$('ptxt').value; editing.fontSize=Math.max(6,Math.min(40,+$('pfs').value||13)); delete editing._orig; editing.color=$('pcol').value;
+  if(isNewNote){if(!editing.created)editing.created=Date.now()}else if(o.text!==editing.text||o.fontSize!==editing.fontSize||o.color!==editing.color)editing.modified=Date.now();
   if($('pdef').checked)setDefaults(editing.fontSize,editing.color);
   pendingNew=null; save(); const pg=editing.page; closePop(); drawMarkers(pg); renderList(); };
 $('pcancel').onclick=()=>{const n=editing;if(n&&n._orig&&n!==pendingNew){n.fontSize=n._orig.fontSize;n.color=n._orig.color;drawMarkers(n.page)}closePop()};
@@ -377,7 +388,7 @@ function renderList(){
   Object.keys(by).map(Number).sort((a,b)=>a-b).forEach(p=>{
     const h=document.createElement('div'); h.className='pg'; h.textContent='第 '+p+' 页'; L.appendChild(h);
     by[p].sort((a,b)=>b.y-a.y||a.x-b.x).forEach(n=>{
-      const d=document.createElement('div'); d.className='item'; const tx=document.createElement('div'); tx.className='txt clamp'; tx.textContent=n.text||'（空）'; const mo=document.createElement('span'); mo.className='more'; mo.textContent='展开全文 ▾'; mo.onclick=e=>{e.stopPropagation();const ex=tx.classList.toggle('exp');mo.textContent=ex?'收起 ▴':'展开全文 ▾'}; d.append(tx,mo); d.style.fontSize=(n.fontSize||13)+'px'; d.style.color=n.color||'#333'; d.style.borderLeft='4px solid '+(n.color||'#ffd23f'); d.onclick=()=>jump(n); L.appendChild(d); requestAnimationFrame(()=>{if(tx.scrollHeight>tx.clientHeight+1)d.classList.add('long')});
+      const d=document.createElement('div'); d.className='item'; const idt=document.createElement('div'); idt.className='idt'; idt.textContent=fmtDate(n.created,1)+(n.modified?' · 改 '+fmtDate(n.modified,1):''); d.appendChild(idt); const tx=document.createElement('div'); tx.className='txt clamp'; tx.textContent=n.text||'（空）'; const mo=document.createElement('span'); mo.className='more'; mo.textContent='展开全文 ▾'; mo.onclick=e=>{e.stopPropagation();const ex=tx.classList.toggle('exp');mo.textContent=ex?'收起 ▴':'展开全文 ▾'}; d.append(tx,mo); d.style.fontSize=(n.fontSize||13)+'px'; d.style.color=n.color||'#333'; d.style.borderLeft='4px solid '+(n.color||'#ffd23f'); d.onclick=()=>jump(n); L.appendChild(d); requestAnimationFrame(()=>{if(tx.scrollHeight>tx.clientHeight+1)d.classList.add('long')});
     });
   });
 }
@@ -396,7 +407,7 @@ $('ccol').oninput=e=>{penColor=e.target.value;document.querySelectorAll('.sw').f
 $('lw').oninput=e=>$('lwv').textContent=e.target.value;
 function setDefaults(fs,c){defaults={fontSize:fs,color:c};localStorage.setItem('pdfnotes:defaults',JSON.stringify(defaults));$('dfs').value=fs;$('dcol').value=c}
 $('dfs').value=defaults.fontSize;$('dcol').value=defaults.color;
-$('dfs').onchange=()=>setDefaults(Math.max(8,Math.min(40,+$('dfs').value||13)),$('dcol').value);$('dcol').onchange=()=>setDefaults(defaults.fontSize,$('dcol').value);
+$('dfs').onchange=()=>setDefaults(Math.max(8,Math.min(40,+$('dfs').value||20)),$('dcol').value);$('dcol').onchange=()=>setDefaults(defaults.fontSize,$('dcol').value);
 document.addEventListener('keydown',e=>{if(e.key==='Escape'){if(adding)setAdding(false);if(drawMode||eraseMode){eraseMode=false;setDraw(false)}}
   if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='z'&&document.activeElement.tagName!=='TEXTAREA'&&pdf){e.preventDefault();undo()}});
 function clampS(s){return Math.max(0.3,Math.min(4,s))}
